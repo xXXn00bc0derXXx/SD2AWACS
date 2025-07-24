@@ -3,6 +3,7 @@ const http = require('http');
 const socketIO = require('socket.io');
 const axios = require('axios');
 const FormData = require('form-data');
+const mqtt = require('mqtt');
 
 // ----------- CONFIG -----------
 const UDP_PORT = 5005;
@@ -12,8 +13,23 @@ const MAILGUN_DOMAIN = '';
 const MAILGUN_API_KEY = '';
 const TO_EMAIL = 'christina.nguyen8712@gmail.com';
 
+const MQTT_BROKER_URL = 'mqtt://broker.hivemq.com';
+const MQTT_TOPIC = 'mini-awacs/radar';
+
 let latestRadarData = null;
 // ------------------------------
+
+// ----------- MQTT CLIENT SETUP -----------
+const mqttClient = mqtt.connect(MQTT_BROKER_URL);
+
+mqttClient.on('connect', () => {
+  console.log(`✅ Connected to MQTT broker: ${MQTT_BROKER_URL}`);
+});
+
+mqttClient.on('error', (err) => {
+  console.error("❌ MQTT connection error:", err.message);
+});
+// -----------------------------------------
 
 // ----------- EMAIL FUNCTION -----------
 function sendEmail(data) {
@@ -21,7 +37,7 @@ function sendEmail(data) {
   form.append('from', `Mini AWACS <mailgun@${MAILGUN_DOMAIN}>`);
   form.append('to', TO_EMAIL);
   form.append('subject', 'Radar and Elevation Mechanism Data Update');
-  form.append('text', `Radar Snapshot @ ${new Date().toLocaleString()}:\n\n${data}`);
+  form.append('text', `Radar Snapshot @ ${new Date().toLocaleString()}:\n\n${JSON.stringify(data, null, 2)}`);
 
   axios.post(`https://api.mailgun.net/v3/${MAILGUN_DOMAIN}/messages`, form, {
     auth: {
@@ -30,12 +46,13 @@ function sendEmail(data) {
     },
     headers: form.getHeaders()
   }).then(response => {
-    console.log('Email sent:', response.data);
+    console.log('📧 Email sent:', response.data.message);
   }).catch(error => {
-    console.error('Email send error:', error.message);
+    console.error('❌ Email send error:', error.message);
   });
 }
 // --------------------------------------
+
 // ----------- CREATE HTTP + WEBSOCKET SERVER -----------
 const httpServer = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -67,12 +84,11 @@ const io = socketIO(httpServer, {
     methods: ["GET", "POST"]
   }
 });
-// ------------------------------------------------------
-// ----------- SOCKET.IO CONNECTION -----------
+
 io.on('connection', (socket) => {
   console.log("✅ WebSocket client connected");
 });
-// --------------------------------------------
+// ------------------------------------------------------
 
 // ----------- EMAIL TIMER (EVERY 5 MINUTES) -----------
 setInterval(() => {
@@ -95,12 +111,23 @@ udpServer.on('message', (msg, rinfo) => {
     console.log("📡 Received radar data:", data);
     io.emit('radarData', data);
 
+    // Publish to MQTT
+    mqttClient.publish(MQTT_TOPIC, JSON.stringify(data), (err) => {
+      if (err) {
+        console.error('❌ MQTT publish error:', err.message);
+      } else {
+        console.log(`📤 MQTT published to topic "${MQTT_TOPIC}"`);
+      }
+    });
+
+    // Send email immediately
     sendEmail(data);
   } catch (err) {
     console.error("❌ Failed to parse radar data:", err.message);
   }
 });
 // --------------------------------------------------
+
 // ----------- START SERVERS -----------
 udpServer.bind(UDP_PORT, () => {
   console.log(`✅ UDP server listening on port ${UDP_PORT}`);
